@@ -215,6 +215,15 @@ table.songs input.n{width:4.2em}
 #flash small{font-size:.6em;color:var(--ink);margin-left:.6em}
 .winbadge{font-size:clamp(18px,1.8vw,34px);font-weight:700;color:var(--c);border:2px solid var(--c);padding:.2em .9em;box-shadow:0 0 18px var(--c)}
 @keyframes zoom{from{transform:scale(.4);opacity:0}}
+#qrov{position:fixed;inset:0;z-index:65;display:none;place-items:center;background:rgba(10,4,9,.85);padding:16px}
+#qrov.show{display:grid}
+#qrov .qrin{width:min(100%,64em);max-height:100%;overflow:auto}
+#qrov .bar{align-items:center}
+#qrov .bar .pbtn{color:#1b0b16;border-color:#1b0b16;font-weight:700}
+#qrov .qrgrid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:1.2em;align-items:start}
+#qrov .qrbox{width:min(100%,30em)}
+#qrov .qrside{display:flex;flex-direction:column;gap:.7em}
+@media (max-width:760px){#qrov .qrgrid{grid-template-columns:1fr}}
 #toast{position:fixed;left:50%;bottom:1.4em;transform:translateX(-50%);z-index:70;background:#2a0f22;border:2px solid var(--warn);color:var(--warn);padding:.6em 1em;display:none;max-width:90vw;text-align:center}
 #toast.show{display:block}
 #fx{position:fixed;inset:0;z-index:55;pointer-events:none;width:100%;height:100%}
@@ -2685,11 +2694,16 @@ async function setPhoto(k,file){if(PH[k])URL.revokeObjectURL(PH[k]);PH[k]=URL.cr
 
 /* ============ 실시간 연결 (공개 MQTT) ============ */
 const BROKERS=["wss://broker.hivemq.com:8884/mqtt","wss://broker.emqx.io:8084/mqtt"];
-const NET={c:null,on:false};
-function netConnect(room,onUp,onMsg){if(!window.mqtt||!room)return;let bi=0;const go=()=>{try{NET.c&&NET.c.end(true)}catch(e){}const c=mqtt.connect(BROKERS[bi],{clientId:"gp_"+rid(10),keepalive:30,reconnectPeriod:3000,connectTimeout:8000,clean:true});NET.c=c;c.on("connect",()=>{NET.on=true;netChanged();onUp()});c.on("close",()=>{if(NET.on){NET.on=false;netChanged()}});c.on("offline",()=>{NET.on=false;netChanged()});c.on("error",()=>{});c.on("message",(t,b)=>{let d;try{d=JSON.parse(b.toString())}catch(e){return}onMsg(t.split("/").pop(),d)})};go();setTimeout(()=>{if(!NET.on){bi=1;go()}},9000)}
+/* 두 서버에 동시에 붙어서, 한쪽이 막혀도 다른 쪽으로 오가게 한다. 같은 신호가 두 번 와도 한 번만 처리된다. */
+const NET={cs:[],on:false};
+function netConnect(room,onUp,onMsg){if(!window.mqtt||!room)return;NET.cs=BROKERS.map(u=>{const c=mqtt.connect(u,{clientId:"gp_"+rid(10),keepalive:30,reconnectPeriod:3000,connectTimeout:8000,clean:true});c.on("connect",()=>{netChanged();onUp(c)});c.on("close",netChanged);c.on("offline",netChanged);c.on("error",()=>{});c.on("message",(t,b)=>{let d;try{d=JSON.parse(b.toString())}catch(e){return}onMsg(t.split("/").pop(),d)});return c})}
+function netKick(){for(const c of NET.cs){if(!c.connected&&!c.reconnecting){try{c.reconnect()}catch(e){}}}}
 const TOP=room=>"gp-rec-2026/"+room+"/";
-function netPub(sub,data,retain){if(NET.c&&NET.on){try{NET.c.publish(TOP(ROOM)+sub,JSON.stringify(data),{qos:0,retain:!!retain})}catch(e){}}}
-function netChanged(){if(MODE==="host"){const n=$("#net");if(n){n.className="net"+(NET.on?" on":"");n.lastElementChild.textContent=NET.on?"실시간 연결됨":"실시간 꺼짐"}if(st.view==="lobby"&&!document.activeElement.matches("input"))render();else paintBuzz()}else renderPlayer()}
+function netPub(sub,data,retain){for(const c of NET.cs){if(c.connected){try{c.publish(TOP(ROOM)+sub,JSON.stringify(data),{qos:0,retain:!!retain})}catch(e){}}}}
+/* 화면 꺼짐 방지 (지원하는 브라우저에서만) */
+let WL=null;
+async function wakeOn(){try{if(navigator.wakeLock&&!WL&&document.visibilityState==="visible"){WL=await navigator.wakeLock.request("screen");WL.addEventListener("release",()=>{WL=null})}}catch(e){WL=null}}
+function netChanged(){const on=NET.cs.some(c=>c.connected);if(on===NET.on)return;NET.on=on;if(MODE==="host"){const n=$("#net");if(n){n.className="net"+(NET.on?" on":"");n.lastElementChild.textContent=NET.on?"실시간 연결됨":"실시간 꺼짐"}if(st.view==="lobby"&&!document.activeElement.matches("input"))render();else paintBuzz()}else renderPlayer()}
 
 /* ============ 사회자 상태 ============ */
 const DEF={teams:{A:{name:"A팀",score:0},B:{name:"B팀",score:0}},hist:[],done:{},assign:{},manual:[],extra:[],room:rid(6),view:"title",
@@ -2719,7 +2733,7 @@ function buzzHTML(){const b=st.buzz;let c="var(--dim)",s,cls="";
  else if(b.w){c=tc(b.w.t);s=`${esc(tn(b.w.t))} · ${esc(b.w.name)} 먼저!`}
  else if(b.open){c="var(--warn)";cls="open";s=(b.out&&b.out.length)?`버저 열림 · ${esc(b.out.join(", "))} 빼고 누르기`:"버저 열림 · 휴대폰으로 누르세요"}
  else s="버저 닫힘";
- return `<div class="buzz ${cls}" id="buzzp" style="--c:${c}"><div class="muted" style="font-size:.75em">휴대폰 버저</div><div class="bs">${s}</div>${NET.on?`<div class="row"><button class="pbtn sm" data-act="bopen">버저 다시 열기</button>${b.w?`<button class="pbtn sm ghost" data-act="bwrong">오답 → 틀린 사람 빼고 다시</button>`:""}</div>`:""}</div>`}
+ return `<div class="buzz ${cls}" id="buzzp" style="--c:${c}"><div class="muted" style="font-size:.75em">휴대폰 버저</div><div class="bs">${s}</div>${NET.on?`<div class="row"><button class="pbtn sm" data-act="bopen">버저 다시 열기</button>${b.w?`<button class="pbtn sm ghost" data-act="bwrong">오답 → 틀린 사람 빼고 다시</button>`:""}</div><div class="muted" style="font-size:.7em">키보드: Enter 버저 팀 정답 · X 오답 · B 다시 열기${st.view==="cho"?" · R 정답 공개":""} · Q QR</div>`:""}</div>`}
 function winBadge(){const w=st.buzz.w;return w?`<div class="winbadge" style="--c:${tc(w.t)}">답하는 사람: ${esc(tn(w.t))} ${esc(w.name)}</div>`:""}
 function paintBuzz(){const p=$("#buzzp");if(p)p.outerHTML=buzzHTML()}
 
@@ -2727,7 +2741,7 @@ function paintBuzz(){const p=$("#buzzp");if(p)p.outerHTML=buzzHTML()}
 function stageLabel(){const v=st.view;
  if(v==="zul")return "STAGE 1 · 줄줄이 말해요";if(v==="people")return "STAGE 2 · 인물퀴즈";if(v==="cho")return "STAGE 3 · 초성 맞추기";if(v==="ost")return "STAGE 4 · 노래 맞추기 · "+(OST.slice(0,st.o.r).reduce((n,x)=>n+x.items.length,0)+st.o.i+1)+"번 노래";if(v==="final")return st.f.step===2?"결과 발표!":"FINAL · 마지막 한 문제";if(v==="lobby")return "팀 배정 중";return "곧 시작해요"}
 let pubT=null;
-function pub(){clearTimeout(pubT);pubT=setTimeout(()=>{const win=st.f.step===2?winnerTeam():null;netPub("state",{t:{A:{n:st.teams.A.name,s:st.teams.A.score},B:{n:st.teams.B.name,s:st.teams.B.score}},as:st.assign,stg:stageLabel(),bz:st.buzz,end:st.f.step===2,win},true)},60)}
+function pub(){clearTimeout(pubT);pubT=setTimeout(()=>{const win=st.f.step===2?winnerTeam():null;netPub("state",{t:{A:{n:st.teams.A.name,s:st.teams.A.score},B:{n:st.teams.B.name,s:st.teams.B.score}},as:st.assign,stg:stageLabel(),bz:st.buzz,end:st.f.step===2,win,q:Date.now()},true)},60)}
 function winnerTeam(){const a=st.teams.A.score,b=st.teams.B.score;return a===b?"tie":a>b?"A":"B"}
 
 /* 타이머 */
@@ -2761,7 +2775,7 @@ function hud(){const T=t=>`<div class="team" data-act="pop" data-t="${t}" style=
 function renderHud(bumpT){const h=document.querySelector(".hud");if(!h)return;h.outerHTML=hud();if(bumpT){const e=$("#team"+bumpT);e&&e.classList.add("bump")}const l=$("#lastact");if(l)l.textContent=lastText()}
 function lastText(){const h=st.hist[st.hist.length-1];return h?`최근: ${tn(h.t)} ${h.pts>0?"+":""}${h.pts} · ${h.label}`:"아직 점수 기록이 없어요"}
 function foot(){const v=st.view;if(v==="title"||v==="boot")return "<footer></footer>";
- return `<footer class="foot"><div class="row">${v!=="stages"?`<button class="pbtn sm" data-act="go" data-v="stages">◀ 스테이지</button>`:`<button class="pbtn sm ghost" data-act="go" data-v="title">◀ 처음 화면</button>`}<button class="pbtn sm ghost" data-act="go" data-v="lobby">팀 · QR</button><button class="pbtn sm ghost" data-act="go" data-v="settings">설정</button></div><div class="last" id="lastact">${esc(lastText())}</div><button class="pbtn sm ghost" data-act="undo">↶ 되돌리기</button></footer>`}
+ return `<footer class="foot"><div class="row">${v!=="stages"?`<button class="pbtn sm" data-act="go" data-v="stages">◀ 스테이지</button>`:`<button class="pbtn sm ghost" data-act="go" data-v="title">◀ 처음 화면</button>`}<button class="pbtn sm ghost" data-act="go" data-v="lobby">팀 · QR</button><button class="pbtn sm ghost" data-act="qrov" title="진행 중인 문제는 그대로 두고 QR만 띄워요">QR 띄우기 (Q)</button><button class="pbtn sm ghost" data-act="go" data-v="settings">설정</button></div><div class="last" id="lastact">${esc(lastText())}</div><button class="pbtn sm ghost" data-act="undo">↶ 되돌리기</button></footer>`}
 
 const V={};
 V.boot=()=>`<section class="boot"><div class="hello">${XMARK}NOW LOADING${XMARK}</div><div class="lbar"><i></i></div><div class="blink muted">하남중앙교회 청년반 가을 야유회 레크레이션</div></section>`;
@@ -2869,32 +2883,26 @@ V.cho=()=>{const r=st.c.r;
  </div></div></div></div>`};
 
 /* STAGE 4 + FINAL 공용 카드 */
-function songCard(id,label){const S=SONGS[id];const R=ui.rev;const playing=!st.buzz.w&&!R.s;const hintTxt=S.film?"영화: "+S.w:"가수: "+S.h;const src=S.film?S.w:S.h+" · "+S.w+" OST";
- return `<div class="ostcard"><div class="musicbox${playing?"":" stop"}"><div class="eqb">${"<i></i>".repeat(9)}</div><div class="mn">♪ ${esc(label)}</div></div><div class="anslot">
-  <div><div class="k">노래 제목</div><div class="v ${R.s?"rev":"hid"}" style="font-size:clamp(28px,3.4vw,72px)">${R.s?esc(S.s):"? ? ?"}</div></div>
-  <div><div class="k">힌트</div><div class="hint" style="font-size:1.3em">${R.h?esc(hintTxt):""}</div></div>
-  ${R.s?`<div class="muted">${esc(src)}${S.y?" · "+S.y:""}</div>`:""}
- </div></div>`}
+function songCard(id,label){const playing=!st.buzz.w&&!ui.rev.s;
+ return `<div class="ostcard" style="grid-template-columns:minmax(15em,36em);justify-content:center"><div class="musicbox${playing?"":" stop"}"><div class="eqb">${"<i></i>".repeat(9)}</div><div class="mn">♪ ${esc(label)}</div></div></div>`}
 function songControls(id){const cfg=songCfg(id);const S=SONGS[id];const q=encodeURIComponent(S.s+" "+(S.film?S.w:S.h));
  return cfg.vid?`<div class="row"><button class="pbtn" style="flex:1" data-act="yplay" data-id="${id}" data-k="a">▶ 전주 5초</button><button class="pbtn" style="flex:1" data-act="yplay" data-id="${id}" data-k="c">▶ 후렴 10초</button><button class="pbtn ghost" data-act="ystop" aria-label="정지">■</button></div>`
  :`<a class="pbtn" href="https://www.youtube.com/results?search_query=${q}" target="_blank" rel="noopener">유튜브에서 찾기 ↗</a><p class="note">설정 → 노래 링크에 영상 주소를 넣으면 여기서 5초만 틀 수 있어요.</p>`}
-function revealRow(){const R=ui.rev;return `<div class="row"><button class="pbtn sm ghost" data-act="orev" data-k="h">${R.h?"힌트 숨기기":"힌트 보기"}</button><button class="pbtn sm ghost" data-act="orev" data-k="all">${R.s?"정답 숨기기":"정답 공개"}</button></div>`}
 V.ost=()=>{const r=st.o.r,R=OST[r],id="o"+r+"-"+st.o.i;const num=OST.slice(0,r).reduce((n,x)=>n+x.items.length,0);
  return `<div class="ghead"><span class="stag">STAGE 4</span><h2>노래 맞추기</h2>${tabsHTML(OST.map(x=>x.name.split(" · ")[0]+" · "+x.name.split(" · ")[1]),r,"or")}</div>${chipsHTML("o"+r+"-",R.items.length,st.o.i,"oi",num)}
- <div class="stagebox"><div class="win big"><div class="muted">노래 제목을 맞혀 주세요!</div>${songCard(id,(num+st.o.i+1)+"번 노래")}${revealRow()}${winBadge()}</div>
+ <div class="stagebox"><div class="win big"><div class="muted">노래 제목을 맞혀 주세요!</div>${songCard(id,(num+st.o.i+1)+"번 노래")}${winBadge()}</div>
  <div class="side"><div class="win"><div class="bar"><span>PLAY</span><span>20점</span></div><div class="body" style="display:flex;flex-direction:column;gap:.7em">
   <div class="playnote">휴대폰 재생목록에서 <b>${num+st.o.i+1}번</b> 곡을 트세요.<br>버저가 울리면 노래를 멈춰요.</div>${buzzHTML()}
   <div class="row"><button class="pbtn" style="flex:1" data-act="oaward" data-t="A" data-v="20">${esc(tn("A"))} +20</button><button class="pbtn b" style="flex:1" data-act="oaward" data-t="B" data-v="20">${esc(tn("B"))} +20</button></div>
-  <div class="row"><button class="pbtn sm ghost" style="flex:1" data-act="oaward" data-t="A" data-v="10" data-half="1">${esc(tn("A"))} +10</button><button class="pbtn sm ghost" style="flex:1" data-act="oaward" data-t="B" data-v="10" data-half="1">${esc(tn("B"))} +10</button></div>
   <div class="row"><button class="pbtn sm" data-act="onav" data-v="-1">◀ 이전</button><button class="pbtn sm" data-act="onav" data-v="1">다음 ▶</button></div>
-  <p class="note">노래 제목만 맞히면 20점. 후렴을 듣거나 힌트를 보고 맞히면 10점이에요.</p>
+  <p class="note">노래 제목을 맞히면 20점이에요.</p>
  </div></div></div></div>`};
 V.final=()=>{if(st.f.step===2){const w=winnerTeam();const a=st.teams.A.score,b=st.teams.B.score;
   if(w==="tie")return `<section class="winner" style="--c:var(--warn)"><div class="hello">${XMARK}DRAW${XMARK}</div><h1>무승부!</h1><div class="subt">${esc(tn("A"))} ${a} : ${b} ${esc(tn("B"))}</div><div class="row"><button class="pbtn lg primary" data-act="tie">동점 결정 문제로 ▶</button><button class="pbtn" data-act="fstep" data-v="0">◀ 돌아가기</button></div></section>`;
   return `<section class="winner" style="--c:${tc(w)}"><div class="hello">${XMARK}WINNER${XMARK}</div><h1>${esc(tn(w))}</h1><div class="subt">${esc(tn("A"))} ${a} : ${b} ${esc(tn("B"))}</div><div class="sparks">${SPARK(34)}${SPARK(54)}${SPARK(34)}</div><p class="subt">상품: ${esc(tn(w))}이 모아 둔 과자를 먼저 골라요<br>벌칙: ${esc(tn(other(w)))}은 일요일 아침 정리와 체크아웃 담당!</p><div class="row"><button class="pbtn" data-act="confetti">폭죽 한 번 더</button><button class="pbtn ghost" data-act="fstep" data-v="0">◀ 돌아가기</button></div></section>`}
  const id="x"+st.f.i;
  return `<div class="ghead"><span class="stag">FINAL</span><h2>마지막 한 문제 · 50점</h2><div class="tabs"><button class="tab" data-act="frand">다음 예비 곡 ▶</button><button class="tab on" data-act="fstep" data-v="2">결과 발표 ▶</button></div></div>
- <div class="stagebox"><div class="win big"><div class="muted">전주 3초만 듣고 맞혀 보세요!</div>${songCard(id,"마지막 한 곡")}${revealRow()}${winBadge()}</div>
+ <div class="stagebox"><div class="win big"><div class="muted">전주 3초만 듣고 맞혀 보세요!</div>${songCard(id,"마지막 한 곡")}${winBadge()}</div>
  <div class="side"><div class="win"><div class="bar"><span>LAST CHANCE</span><span>50점</span></div><div class="body" style="display:flex;flex-direction:column;gap:.7em">
   <div class="playnote">재생목록의 <b>예비 ${st.f.i+1}번</b> 곡을 전주 3초만 트세요.</div>
   ${buzzHTML()}
@@ -2970,11 +2978,10 @@ const ACT={
  or:d=>{st.o.r=+d.r;st.o.i=0;save();enterQ()},
  oi:d=>{st.o.i=+d.i;save();enterQ()},
  onav:d=>oMove(+d.v),
- orev:d=>{if(d.k==="all"){const on=!ui.rev.s;ui.rev={...ui.rev,s:on,w:on,h:on||ui.rev.h}}else ui.rev[d.k]=!ui.rev[d.k];render()},
  opeek:()=>{ui.peek=!ui.peek;placeYT();render()},
  yplay:d=>{const c=songCfg(d.id);if(!c.vid)return;if(d.k==="a")ytPlay(c.vid,c.a,5);else if(d.k==="a3")ytPlay(c.vid,c.a,3);else ytPlay(c.vid,c.ch,10);if(!st.buzz.open&&!st.buzz.w)openBuzz()},
  ystop:()=>ytStop(),
- oaward:d=>{st.done["o"+st.o.r+"-"+st.o.i]=d.half?"pass":"ok";st.buzz.open=false;ui.rev={...ui.rev,w:true,s:true};award(d.t,+d.v,"노래 "+(OST.slice(0,st.o.r).reduce((n,x)=>n+x.items.length,0)+st.o.i+1)+"번");flash("정답!",tc(d.t),tn(d.t)+" +"+d.v);render()},
+ oaward:d=>{st.done["o"+st.o.r+"-"+st.o.i]="ok";st.buzz.open=false;ui.rev={...ui.rev,w:true,s:true};award(d.t,+d.v,"노래 "+(OST.slice(0,st.o.r).reduce((n,x)=>n+x.items.length,0)+st.o.i+1)+"번");flash("정답!",tc(d.t),tn(d.t)+" +"+d.v);render()},
  // FINAL
  frand:()=>{st.f.i=(st.f.i+1)%RESERVE.length;save();enterQ()},
  faward:d=>{st.buzz.open=false;ui.rev={w:true,s:true,h:true};award(d.t,50,"마지막 한 문제");flash("+50!",tc(d.t),tn(d.t));render()},
@@ -3000,16 +3007,38 @@ const CHG={
  pone:async el=>{const f=el.files[0];if(!f)return;await setPhoto(el.dataset.k,f);render()},
  pextra:async el=>{for(const f of el.files){const k="x:"+rid(8);await setPhoto(k,f);st.extra.push({k,name:f.name.replace(/\.[^.]+$/,"")})}save();toast(el.files.length+"장 넣었어요");render()}
 };
-document.addEventListener("click",e=>{const el=e.target.closest("[data-act]");if(!el){if(ui.pop&&!e.target.closest(".pop")){ui.pop=null;renderHud()}return}ensureAudio();const f=ACT[el.dataset.act];if(f)f(el.dataset,el,e)});
+document.addEventListener("click",e=>{if(e.target.id==="qrov"){qrClose();return}const el=e.target.closest("[data-act]");if(el&&["caward","oaward","faward"].includes(el.dataset.act))ui.paidBz=st.buzz.id;if(!el){if(ui.pop&&!e.target.closest(".pop")){ui.pop=null;renderHud()}return}ensureAudio();const f=ACT[el.dataset.act];if(f)f(el.dataset,el,e)});
 document.addEventListener("change",e=>{const el=e.target.closest("[data-chg]");if(el&&CHG[el.dataset.chg])CHG[el.dataset.chg](el,e)});
 document.addEventListener("input",e=>{const el=e.target;if(el.dataset.inp==="tname"){st.teams[el.dataset.t].name=el.value.trim()||el.dataset.t+"팀";save();renderHud();pub()}
  if(el.dataset.inp==="link"){const id=el.dataset.id;links[id]=links[id]||{};links[id][el.dataset.f]=el.value.trim();LS.set("gp-links",links);const cell=document.querySelector(`[data-st="${id}"]`);if(cell){const ok=!!songCfg(id).vid;cell.className=ok?"okc":"noc";cell.textContent=ok?"재생 가능":"검색만"}}});
 document.addEventListener("submit",e=>{const f=e.target.closest("[data-form]");if(!f)return;e.preventDefault();if(f.dataset.form==="padd"){const i=$("#paddn");const n=i.value.trim().slice(0,12);if(n&&!st.manual.includes(n)){st.manual.push(n);save();render()}}
  if(f.dataset.form==="join"){const i=$("#pname");const n=i.value.trim().slice(0,12);if(!n)return;PS.name=n;LS.set("gp-player-name",n);PS.joined=true;ensureAudio();pJoin();renderPlayer()}});
-document.addEventListener("keydown",e=>{if(MODE!=="host"||e.target.matches("input,textarea"))return;const v=st.view;
+document.addEventListener("keydown",e=>{if(MODE!=="host"||e.target.matches("input,textarea")||e.isComposing||e.ctrlKey||e.metaKey||e.altKey)return;const v=st.view;const code=e.code;
+ if(ui.qr){if(e.key==="Escape"||code==="KeyQ"){e.preventDefault();qrClose()}return}
+ if(code==="KeyQ"&&v!=="boot"){e.preventDefault();qrOpen();return}
+ const B=s=>{const b=document.querySelector(s);if(b){b.click();return true}return false};
+ if(e.key==="Enter"&&["cho","ost","final"].includes(v)){e.preventDefault();if(e.repeat)return;const w=st.buzz.w;
+  if(!w){toast("버저를 누른 사람이 없어요. 점수 버튼을 직접 눌러 주세요");return}
+  if(ui.paidBz===st.buzz.id){toast("이번 버저는 이미 점수를 줬어요");return}
+  if(!B(`[data-act="caward"][data-t="${w.t}"],[data-act="oaward"][data-t="${w.t}"],[data-act="faward"][data-t="${w.t}"]`))toast("이 화면에는 점수 버튼이 없어요");return}
+ if(!e.repeat&&code==="KeyX"){B('[data-act="bwrong"]');return}
+ if(!e.repeat&&code==="KeyB"){B('[data-act="bopen"]');return}
+ if(!e.repeat&&code==="KeyR"){B('[data-act="crev"],[data-act="prev"]');return}
  if(e.key==="ArrowRight"||e.key==="ArrowLeft"){const d=e.key==="ArrowRight"?1:-1;if(v==="zul")zMove(d);else if(v==="people")pMove(d);else if(v==="cho")cMove(d);else if(v==="ost")oMove(d);else return;e.preventDefault()}
  if(e.key===" "&&v==="zul"){e.preventDefault();ACT.zplus()}
  if(e.key==="Escape"&&ui.pop){ui.pop=null;renderHud()}});
+
+/* 게임 중 QR: 화면 위에 겹쳐 띄워서 진행 중인 문제·버저·타이머·노래를 건드리지 않는다 */
+function qrHTML(){const url=playerURL();const un=knownNames().filter(n=>!st.assign[n]);
+ return `<div class="win qrin" role="dialog" aria-label="참가자 입장 QR"><div class="bar"><span>JOIN.QR · 진행 중인 문제는 그대로예요</span><button class="pbtn sm ghost" data-act="qrclose">닫기 (Q)</button></div><div class="body qrgrid">
+  <div><div class="qrbox">${qrSVG(url)||'<div style="color:#000;padding:2em;text-align:center">QR을 만들 수 없어요</div>'}</div><div class="url">${esc(url)}</div></div>
+  <div class="qrside"><b>팀이 없는 사람 ${un.length}명</b>${un.length?`<div class="plist">${un.map(n=>`<div class="prow"><span>${esc(n)}</span><button class="pbtn sm" data-act="qa" data-n="${esc(n)}" data-t="A">${esc(tn("A"))}</button><button class="pbtn sm b" data-act="qa" data-n="${esc(n)}" data-t="B">${esc(tn("B"))}</button></div>`).join("")}</div>`:`<p class="note">QR을 찍고 이름을 넣으면 여기에 나타나요.</p>`}<p class="note">팀을 고르면 바로 버저를 누를 수 있어요.</p></div>
+ </div></div>`}
+function qrOpen(){ui.qr=true;let el=$("#qrov");if(!el){el=document.createElement("div");el.id="qrov";document.body.appendChild(el)}el.innerHTML=qrHTML();el.classList.add("show")}
+function qrClose(){ui.qr=false;const el=$("#qrov");if(el)el.classList.remove("show")}
+function paintQR(){const el=$("#qrov");if(ui.qr&&el)el.innerHTML=qrHTML()}
+ACT.qrov=()=>qrOpen();ACT.qrclose=()=>qrClose();
+ACT.qa=d=>{st.assign[d.n]=d.t;save();pub();sfx("ok");paintQR()};
 
 /* 폭죽 */
 function confetti(){if(matchMedia("(prefers-reduced-motion: reduce)").matches)return;const c=$("#fx"),x=c.getContext("2d");c.width=innerWidth;c.height=innerHeight;const cols=["#ff6ec7","#5fe1ff","#ffd36e","#7dffb0","#ffdcf1"];const P=Array.from({length:220},()=>({x:Math.random()*c.width,y:-20-Math.random()*c.height*.5,vx:(Math.random()-.5)*4,vy:2+Math.random()*4,s:4+Math.random()*7,c:cols[Math.floor(Math.random()*cols.length)],r:Math.random()*6}));const t0=performance.now();const f=()=>{const t=performance.now()-t0;x.clearRect(0,0,c.width,c.height);for(const p of P){p.x+=p.vx;p.y+=p.vy;p.vy+=.03;p.r+=.1;x.fillStyle=p.c;x.fillRect(p.x,p.y,p.s,p.s*(.5+.5*Math.abs(Math.sin(p.r))))}if(t<5000)requestAnimationFrame(f);else x.clearRect(0,0,c.width,c.height)};f()}
@@ -3017,7 +3046,7 @@ function confetti(){if(matchMedia("(prefers-reduced-motion: reduce)").matches)re
 /* ============ 참가자(휴대폰) ============ */
 const PS={name:LS.get("gp-player-name",""),joined:false,S:null,myBuzz:-1,lastBuzzId:-1,lastWin:null};
 function pJoin(){if(PS.name)netPub("join",{name:PS.name},false)}
-function pBuzz(){const S=PS.S;if(!S||!S.bz)return;const myT=S.as&&S.as[PS.name];if(!S.bz.open||S.bz.w||!myT||(S.bz.out||[]).includes(PS.name)||PS.myBuzz===S.bz.id)return;PS.myBuzz=S.bz.id;netPub("buzz",{name:PS.name,id:S.bz.id,at:Date.now()},false);sfx("buzz");try{navigator.vibrate&&navigator.vibrate(60)}catch(e){}renderPlayer()}
+function pBuzz(){const S=PS.S;if(!S||!S.bz)return;const myT=S.as&&S.as[PS.name];if(!S.bz.open||S.bz.w||!myT||(S.bz.out||[]).includes(PS.name)||PS.myBuzz===S.bz.id)return;PS.myBuzz=S.bz.id;const m={name:PS.name,id:S.bz.id,at:Date.now()};if(NET.on)netPub("buzz",m,false);else{PS.pend=m;netKick()}sfx("buzz");try{navigator.vibrate&&navigator.vibrate(60)}catch(e){}renderPlayer()}
 function renderPlayer(){const app=$("#app");
  if(!ROOM){app.innerHTML=`<div class="papp"><div class="ptitle"><div class="hello">${XMARK}HELLO AND${XMARK}</div><div class="welcome">WELCOME</div></div><div class="warnbox">방 정보가 없는 주소예요. 사회자 화면의 QR을 다시 찍어 주세요.</div></div>`;return}
  const S=PS.S;const conn=`<div class="row" style="justify-content:center"><span class="net${NET.on?" on":""}"><i></i><span>${NET.on?"연결됨":"연결 중…"}</span></span></div>`;
@@ -3029,8 +3058,9 @@ function renderPlayer(){const app=$("#app");
  else if(!myT){status="팀 배정을 기다리는 중…"}
  else if(bz&&bz.w){const me=bz.w.name===PS.name;status=me?"내가 1등! 답을 말하세요":`${esc(S.t[bz.w.t].n)} · ${esc(bz.w.name)} 먼저!`;blabel=me?"1등!":"늦었어요";bcls=me?"win":"off"}
  else if(bz&&bz.open&&(bz.out||[]).includes(PS.name)){status="이번 문제는 기회를 썼어요";blabel="기회 끝"}
+ else if(bz&&bz.open&&PS.myBuzz===bz.id&&PS.pend){status="연결이 끊겼어요 · 다시 연결되면 바로 보내요";blabel="보내는 중"}
  else if(bz&&bz.open&&PS.myBuzz===bz.id){status="눌렀어요! 결과를 기다리는 중";blabel="눌렀어요"}
- else if(bz&&bz.open){bcls="live";blabel="누르세요!";status="먼저 누른 팀이 답해요"}
+ else if(bz&&bz.open){bcls="live";blabel="누르세요!";status=NET.on?"먼저 누른 팀이 답해요":"재연결 중 · 눌러 두면 연결되자마자 보내요"}
  else status="문제를 기다리는 중";
  const tcol=myT?tc(myT):"var(--dim)";
  app.innerHTML=`<div class="papp"><div class="row" style="justify-content:space-between"><span class="hearts">${HEART+HEART+HEART}</span>${conn}</div>
@@ -3041,7 +3071,9 @@ function renderPlayer(){const app=$("#app");
  <button class="pbtn sm ghost" style="align-self:center" data-act="prename">이름 바꾸기</button></div>`;
  const b=$("#buzzer");b.addEventListener("pointerdown",e=>{e.preventDefault();ensureAudio();pBuzz()})}
 ACT.prename=()=>{PS.joined=false;renderPlayer()};
-function pOnMsg(sub,d){if(sub!=="state")return;const prev=PS.S;PS.S=d;
+/* 끊긴 동안 누른 버저: 연결되면 보낸다. 그 사이 문제가 바뀌었으면 사회자 쪽에서 무시된다. */
+function pFlush(){if(PS.pend&&NET.on){netPub("buzz",PS.pend,false);PS.pend=null;renderPlayer()}}
+function pOnMsg(sub,d){if(sub!=="state"||!d)return;const prev=PS.S;if(prev&&prev.q&&d.q&&d.q<=prev.q)return;PS.S=d;
  if(d.bz&&prev&&prev.bz&&d.bz.open&&d.bz.id!==prev.bz.id){const myT=d.as&&d.as[PS.name];if(myT&&!(d.bz.out||[]).includes(PS.name)){sfx("open");try{navigator.vibrate&&navigator.vibrate([40,40,40])}catch(e){}}}
  if(d.bz&&d.bz.w&&!(prev&&prev.bz&&prev.bz.w)){if(d.bz.w.name===PS.name){sfx("ok");try{navigator.vibrate&&navigator.vibrate(300)}catch(e){}}}
  if(d.end&&!(prev&&prev.end)){sfx("fanfare");confetti()}
@@ -3049,14 +3081,17 @@ function pOnMsg(sub,d){if(sub!=="state")return;const prev=PS.S;PS.S=d;
 
 /* ============ 시작 ============ */
 function hostOnMsg(sub,d){if(!d||typeof d.name!=="string")return;const name=d.name.trim().slice(0,12);if(!name)return;
- if(sub==="join"){const isNew=!players[name];players[name]={last:Date.now()};if(isNew&&st.view==="lobby"&&!document.activeElement.matches("input"))render();if(isNew)pub()}
+ if(sub==="join"){const isNew=!players[name];players[name]={last:Date.now()};if(isNew&&st.view==="lobby"&&!document.activeElement.matches("input"))render();if(isNew){pub();paintQR()}}
  if(sub==="buzz"){players[name]={last:Date.now()};onBuzz({...d,name})}}
 function boot(){bgInit();
- if(MODE==="player"){document.body.classList.add("phone");if(PS.name&&ROOM)PS.joined=true;renderPlayer();netConnect(ROOM,()=>{NET.c.subscribe(TOP(ROOM)+"state");pJoin()},pOnMsg);setInterval(pJoin,8000);return}
+ if(MODE==="player"){document.body.classList.add("phone");if(PS.name&&ROOM)PS.joined=true;renderPlayer();netConnect(ROOM,c=>{c.subscribe(TOP(ROOM)+"state");pJoin();pFlush()},pOnMsg);setInterval(pJoin,8000);
+  wakeOn();document.addEventListener("pointerdown",wakeOn);
+  document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"){wakeOn();netKick();pJoin()}});return}
  if(innerWidth<760&&!LS.get("gp-host-ok",false)){document.body.classList.add("phone");$("#app").innerHTML=`<div class="papp"><div class="ptitle"><div class="hello">${XMARK}HELLO AND${XMARK}</div><div class="welcome">WELCOME</div><div class="subt" style="margin-top:10px">하남중앙교회 청년반 가을 야유회 레크레이션</div></div><div class="win"><div class="bar"><span>NOTICE</span><span>×</span></div><div class="body" style="display:flex;flex-direction:column;gap:12px;line-height:1.7"><b>참가자는 QR로 들어와 주세요</b><span class="muted">이 주소는 사회자용 큰 화면이에요. TV에 띄운 사회자 화면의 QR을 휴대폰 카메라로 찍으면 참가자 화면이 열려요.</span><button class="pbtn sm ghost" data-act="hostok">사회자예요 · 그래도 열기</button></div></div></div>`;ACT.hostok=()=>{LS.set("gp-host-ok",true);location.reload()};return}
  st.view=st.view&&V[st.view]&&st.view!=="boot"?st.view:"title";const target=st.view;st.view="boot";render();
  loadPhotos().then(()=>{if(st.view!=="boot")render()});
- netConnect(ROOM,()=>{NET.c.subscribe([TOP(ROOM)+"join",TOP(ROOM)+"buzz"]);pub()},hostOnMsg);
+ netConnect(ROOM,c=>{c.subscribe([TOP(ROOM)+"join",TOP(ROOM)+"buzz"]);pub()},hostOnMsg);
+ document.addEventListener("pointerdown",wakeOn);document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"){wakeOn();netKick()}});
  setTimeout(()=>{st.view=target==="boot"?"title":target;save();render();if(st.view==="cho"||st.view==="ost"||st.view==="final")enterQ()},1600);
  setInterval(pub,5000);
  setInterval(()=>{if(st.view==="lobby"&&!document.activeElement.matches("input"))render()},10000)}
